@@ -25,6 +25,7 @@ namespace WhiteKnuckle_Re_Zero
 
         private void Awake()
         {
+            logger = Logger;
             var harmony = new Harmony("com.cr-i.whiteknuckle_rezero");
 
             EnsureAudioSource();
@@ -53,6 +54,7 @@ namespace WhiteKnuckle_Re_Zero
                 StartCoroutine(LoadCustomAudio(foundPath));
             else
                 logger.LogWarning("The revive audio file was not found in the BepInEx/plugins directory.");
+
             harmony.PatchAll();
             logger.LogInfo("The mod loaded and all patches were applied.");
         }
@@ -132,15 +134,7 @@ namespace WhiteKnuckle_Re_Zero
             private static readonly FieldInfo FLockPlayer = AccessTools.Field(typeof(CL_GameManager), "lockPlayer");
             private static readonly FieldInfo FLocalPlayer = AccessTools.Field(typeof(CL_GameManager), "localPlayer");
             private static readonly FieldInfo FUiMan = AccessTools.Field(typeof(CL_GameManager), "uiMan");
-            private static readonly FieldInfo FDeathTypes = AccessTools.Field(typeof(CL_GameManager), "deathTypes");
-            private static readonly FieldInfo FStatManager = AccessTools.Field(typeof(CL_GameManager), "statManager");
             private static readonly FieldInfo FPlayerDead = AccessTools.Field(typeof(ENT_Player), "dead");
-
-            private static readonly MethodInfo MGetReleventTip =
-                AccessTools.Method(typeof(CL_GameManager), "GetReleventTip");
-
-            private static readonly MethodInfo MEndGameSequence =
-                AccessTools.Method(typeof(CL_GameManager), "EndGameSequence");
 
             private static readonly MethodInfo MResetVignettes =
                 AccessTools.Method(typeof(CL_UIManager), "ResetVignettes");
@@ -152,11 +146,6 @@ namespace WhiteKnuckle_Re_Zero
             }
 
             public static Action OnPlayerDeath => (Action)FOnPlayerDeath.GetValue(null);
-
-            public static bool GetReviving(CL_GameManager gm)
-            {
-                return (bool)FReviving.GetValue(gm);
-            }
 
             public static void SetReviving(CL_GameManager gm, bool val)
             {
@@ -178,29 +167,9 @@ namespace WhiteKnuckle_Re_Zero
                 return (CL_UIManager)FUiMan.GetValue(gm);
             }
 
-            public static StatManager GetStatManager(CL_GameManager gm)
-            {
-                return (StatManager)FStatManager.GetValue(gm);
-            }
-
-            public static IList<CL_GameManager.DeathType> GetDeathTypes(CL_GameManager gm)
-            {
-                return (IList<CL_GameManager.DeathType>)FDeathTypes.GetValue(gm);
-            }
-
             public static void SetPlayerDead(ENT_Player player, bool val)
             {
                 FPlayerDead.SetValue(player, val);
-            }
-
-            public static string GetReleventTip(CL_GameManager gm)
-            {
-                return (string)MGetReleventTip.Invoke(gm, null);
-            }
-
-            public static IEnumerator EndGameSequence(CL_GameManager gm)
-            {
-                return (IEnumerator)MEndGameSequence.Invoke(gm, null);
             }
 
             public static void ResetVignettes(CL_UIManager ui)
@@ -218,6 +187,12 @@ namespace WhiteKnuckle_Re_Zero
                 if (GameAccess.GmDead)
                     return false;
 
+                var save = CL_SaveManager.GetMostRecentSaveStateByType(CL_SaveManager.SaveState.SaveType.disk);
+
+                // Kayıt yoksa hiç müdahale etme; return true ile oyunun kendi orijinal Die ve EndGame ekranını çalıştır.
+                if (save == null)
+                    return true;
+
                 GameAccess.GmDead = true;
                 var onPlayerDeath = GameAccess.OnPlayerDeath;
                 if (onPlayerDeath != null)
@@ -225,32 +200,8 @@ namespace WhiteKnuckle_Re_Zero
 
                 StatManager.sessionStats.UpdateStatistic("deaths", 1, StatManager.Statistic.DataType.Int,
                     StatManager.Statistic.ModType.Add);
-                var save = CL_SaveManager.GetMostRecentSaveStateByType(CL_SaveManager.SaveState.SaveType.disk);
 
-                if (save != null)
-                {
-                    __instance.StartCoroutine(ReviveSequence());
-                }
-                else
-                {
-                    var deathTypes = GameAccess.GetDeathTypes(__instance);
-                    var statManager = GameAccess.GetStatManager(__instance);
-                    var localPlayer = GameAccess.GetLocalPlayer(__instance);
-
-                    CL_GameManager.curDeathType = deathTypes[0];
-                    var localization = CL_LocalizationManager.GetLocalization("deathmessages", type);
-                    if (localization == "")
-                        localization = CL_LocalizationManager.GetLocalization("deathmessages", "basic");
-
-                    foreach (var deathType in deathTypes)
-                        if (type == deathType.name)
-                            CL_GameManager.curDeathType = deathType;
-
-                    statManager.GetScoreScreen().SetDeathText(localization);
-                    statManager.GetScoreScreen().SetTip(GameAccess.GetReleventTip(__instance));
-                    __instance.StartCoroutine(GameAccess.EndGameSequence(__instance));
-                    localPlayer.KillEffects(type);
-                }
+                __instance.StartCoroutine(ReviveSequence());
 
                 IEnumerator ReviveSequence()
                 {
@@ -262,9 +213,6 @@ namespace WhiteKnuckle_Re_Zero
 
                     CL_EventManager.StopAllEvents();
                     GameAccess.SetReviving(__instance, true);
-                    // localPlayer.clipHandler.GetGroup((ReadOnlySpan<char>)"player").GetSet((ReadOnlySpan<char>)"death")
-                    //     .Play(1f);
-                    //CL_GameManager.SetTimescale(0.1f);
                     CL_UIManager.instance.SetVignetteTarget("bloodied", 0.0f);
                     uiMan.reviveGroup.gameObject.SetActive(false);
                     AudioManager.FadeOutMusic();
@@ -274,23 +222,11 @@ namespace WhiteKnuckle_Re_Zero
 
                     localPlayer.SetGravityMult(1f);
                     localPlayer.SetGravity(true);
-                    //yield return new WaitForSecondsRealtime(1f);
-
-                    // var fadeSpeed = 0.2f;
-                    // var reviveAudio = CL_UIManager.instance.reviveGroup.GetComponent<AudioSource>();
                     localPlayer.Lock();
-
-                    // while (uiMan.reviveGroup.alpha < 1.0)
-                    // {
-                    //     reviveAudio.volume += (float)(Time.unscaledDeltaTime * (double)fadeSpeed * 0.5);
-                    //     uiMan.reviveGroup.alpha += Time.unscaledDeltaTime * fadeSpeed;
-                    //     yield return null;
-                    // }
 
                     __instance.GetComponent<AudioSource>().Play();
                     save.UpdatePlayerData(localPlayer);
                     CL_SaveManager.LoadSave(save);
-                    //yield return new WaitForSecondsRealtime(2f);
 
                     localPlayer.SetGravityMult(1f);
                     localPlayer.SetGravity(true);
@@ -298,35 +234,23 @@ namespace WhiteKnuckle_Re_Zero
                     CL_GameManager.SetTimescale(1f);
                     localPlayer.UnLock();
                     localPlayer.AddGripStrength(20f);
-                    //yield return new WaitForSecondsRealtime(0.5f);
 
                     if (WorldLoader.initialized)
                         while (!WorldLoader.isLoaded)
                             yield return null;
 
-                    //yield return new WaitForSecondsRealtime(0.5f);
                     GameAccess.SetReviving(__instance, false);
 
-                    // while (uiMan.reviveGroup.alpha > 0.0)
-                    // {
-                    //     uiMan.reviveGroup.alpha -= Time.unscaledDeltaTime;
-                    //     //reviveAudio.volume -= Time.unscaledDeltaTime * 1f;
-                    //     yield return null;
-                    // }
-
                     uiMan.reviveGroup.alpha = 0.0f;
-                    //reviveAudio.volume = 0.0f;
                     GameAccess.SetReviving(__instance, false);
                     GameAccess.SetLockPlayer(__instance, false);
                     localPlayer.SetGravityMult(1f);
                     localPlayer.SetGravity(true);
                     CL_UIManager.instance.SetVignetteTarget("bloodied", 0.0f);
-                    //uiMan.reviveGroup.gameObject.SetActive(false);
                     GameAccess.ResetVignettes(uiMan);
                     CL_AchievementManager.SetAchievementValue("ACH_REVIVE", true);
                     StatManager.sessionStats.UpdateStatistic("revives", 1, StatManager.Statistic.DataType.Int,
                         StatManager.Statistic.ModType.Add);
-                    //yield return new WaitForSecondsRealtime(1f);
 
                     localPlayer.SetGravity(true);
                     if (localPlayer.GetTagger() != null)
