@@ -1,5 +1,6 @@
 using System;
 using System.Collections;
+using System.Collections.Generic;
 using System.IO;
 using System.Reflection;
 using BepInEx;
@@ -16,27 +17,24 @@ namespace WhiteKnuckle_Re_Zero
         private const float SoundCooldown = 0.5f;
         private static readonly string[] SupportedAudioFiles = { "revive.ogg", "revive.wav", "revive.mp3" };
 
-        internal static new ManualLogSource Logger;
-        internal static Main Instance;
+        new static ManualLogSource logger;
 
-        private static bool isLoadingSave;
-        internal static AudioClip customReviveClip;
-        internal static AudioSource audioSource;
-        private static float lastSoundPlayTime = -10f;
+        private static AudioClip _customReviveClip;
+        private static AudioSource _audioSource;
+        private static float _lastSoundPlayTime = -10f;
 
         private void Awake()
         {
-            Instance = this;
-            Logger = base.Logger;
+            var harmony = new Harmony("com.cr-i.whiteknuckle_rezero");
 
             EnsureAudioSource();
 
             string foundPath = null;
 
-            foreach (string file in SupportedAudioFiles)
+            foreach (var file in SupportedAudioFiles)
             {
-                string rootPath = Path.Combine(Paths.PluginPath, file);
-                string modPath = Path.Combine(Paths.PluginPath, "WhiteKnuckle_Re_Zero", file);
+                var rootPath = Path.Combine(Paths.PluginPath, file);
+                var modPath = Path.Combine(Paths.PluginPath, "WhiteKnuckle_Re_Zero", file);
 
                 if (File.Exists(rootPath))
                 {
@@ -52,278 +50,296 @@ namespace WhiteKnuckle_Re_Zero
             }
 
             if (!string.IsNullOrEmpty(foundPath))
-            {
                 StartCoroutine(LoadCustomAudio(foundPath));
-            }
             else
-            {
-                Logger.LogWarning("The revive audio file was not found in the BepInEx/plugins directory.");
-            }
-
-            Harmony.CreateAndPatchAll(typeof(LoadSaveHookPatch));
-            Harmony.CreateAndPatchAll(typeof(ReviveHookPatch));
-
-            Logger.LogInfo("The mod loaded and all patches were applied.");
+                logger.LogWarning("The revive audio file was not found in the BepInEx/plugins directory.");
+            harmony.PatchAll();
+            logger.LogInfo("The mod loaded and all patches were applied.");
         }
 
         private static IEnumerator LoadCustomAudio(string path)
         {
-            string fileUri = new System.Uri(path).AbsoluteUri;
+            var fileUri = new Uri(path).AbsoluteUri;
 
-            AudioType audioType = AudioType.OGGVORBIS;
+            var audioType = AudioType.OGGVORBIS;
             if (path.EndsWith(".wav", StringComparison.OrdinalIgnoreCase))
                 audioType = AudioType.WAV;
             else if (path.EndsWith(".mp3", StringComparison.OrdinalIgnoreCase))
                 audioType = AudioType.MPEG;
 
-            using (UnityWebRequest www = UnityWebRequestMultimedia.GetAudioClip(fileUri, audioType))
+            using (var www = UnityWebRequestMultimedia.GetAudioClip(fileUri, audioType))
             {
                 yield return www.SendWebRequest();
 
                 if (www.result == UnityWebRequest.Result.Success)
                 {
-                    customReviveClip = DownloadHandlerAudioClip.GetContent(www);
+                    _customReviveClip = DownloadHandlerAudioClip.GetContent(www);
 
-                    if (customReviveClip != null)
-                    {
-                        Logger.LogInfo($"Loaded audio file '{Path.GetFileName(path)}' ({customReviveClip.length:F2}s).");
-                    }
+                    if (_customReviveClip != null)
+                        logger.LogInfo(
+                            $"Loaded audio file '{Path.GetFileName(path)}' ({_customReviveClip.length:F2}s).");
                     else
-                    {
-                        Logger.LogError("The audio file was loaded but could not be converted to an AudioClip. Check the codec format.");
-                    }
+                        logger.LogError(
+                            "The audio file was loaded but could not be converted to an AudioClip. Check the codec format.");
                 }
                 else
                 {
-                    Logger.LogError($"Failed to load the audio file: {www.error}");
+                    logger.LogError($"Failed to load the audio file: {www.error}");
                 }
             }
         }
 
         private static void EnsureAudioSource()
         {
-            if (audioSource != null)
+            if (_audioSource != null)
                 return;
 
-            GameObject soundHost = new GameObject("WhiteKnuckle_AudioHost");
+            var soundHost = new GameObject("WhiteKnuckle_AudioHost");
             DontDestroyOnLoad(soundHost);
-            audioSource = soundHost.AddComponent<AudioSource>();
-            audioSource.playOnAwake = false;
-            audioSource.spatialBlend = 0f;
+            _audioSource = soundHost.AddComponent<AudioSource>();
+            _audioSource.playOnAwake = false;
+            _audioSource.spatialBlend = 0f;
         }
 
+        // ReSharper disable Unity.PerformanceAnalysis
         internal static void PlayCustomSound()
         {
-            if (customReviveClip == null)
+            if (_customReviveClip == null)
             {
-                Logger.LogWarning("The revive sound could not be played because the AudioClip is not loaded.");
+                logger.LogWarning("The revive sound could not be played because the AudioClip is not loaded.");
                 return;
             }
 
-            if (Time.unscaledTime - lastSoundPlayTime < SoundCooldown)
+            if (Time.unscaledTime - _lastSoundPlayTime < SoundCooldown)
                 return;
 
             EnsureAudioSource();
 
-            lastSoundPlayTime = Time.unscaledTime;
-            audioSource.volume = 1f;
-            audioSource.PlayOneShot(customReviveClip);
-            Logger.LogInfo("The revive sound was played.");
+            _lastSoundPlayTime = Time.unscaledTime;
+            _audioSource.volume = 1f;
+            _audioSource.PlayOneShot(_customReviveClip);
+            logger.LogInfo("The revive sound was played.");
         }
 
-        private static IEnumerator EmptyDelayRoutine()
+        private static class GameAccess
         {
-            yield break;
+            private static readonly FieldInfo FGmDead = AccessTools.Field(typeof(CL_GameManager), "dead");
+
+            private static readonly FieldInfo FOnPlayerDeath =
+                AccessTools.Field(typeof(CL_GameManager), "_onPlayerDeath");
+
+            private static readonly FieldInfo FReviving = AccessTools.Field(typeof(CL_GameManager), "reviving");
+            private static readonly FieldInfo FLockPlayer = AccessTools.Field(typeof(CL_GameManager), "lockPlayer");
+            private static readonly FieldInfo FLocalPlayer = AccessTools.Field(typeof(CL_GameManager), "localPlayer");
+            private static readonly FieldInfo FUiMan = AccessTools.Field(typeof(CL_GameManager), "uiMan");
+            private static readonly FieldInfo FDeathTypes = AccessTools.Field(typeof(CL_GameManager), "deathTypes");
+            private static readonly FieldInfo FStatManager = AccessTools.Field(typeof(CL_GameManager), "statManager");
+            private static readonly FieldInfo FPlayerDead = AccessTools.Field(typeof(ENT_Player), "dead");
+
+            private static readonly MethodInfo MGetReleventTip =
+                AccessTools.Method(typeof(CL_GameManager), "GetReleventTip");
+
+            private static readonly MethodInfo MEndGameSequence =
+                AccessTools.Method(typeof(CL_GameManager), "EndGameSequence");
+
+            private static readonly MethodInfo MResetVignettes =
+                AccessTools.Method(typeof(CL_UIManager), "ResetVignettes");
+
+            public static bool GmDead
+            {
+                get => (bool)FGmDead.GetValue(null);
+                set => FGmDead.SetValue(null, value);
+            }
+
+            public static Action OnPlayerDeath => (Action)FOnPlayerDeath.GetValue(null);
+
+            public static bool GetReviving(CL_GameManager gm)
+            {
+                return (bool)FReviving.GetValue(gm);
+            }
+
+            public static void SetReviving(CL_GameManager gm, bool val)
+            {
+                FReviving.SetValue(gm, val);
+            }
+
+            public static void SetLockPlayer(CL_GameManager gm, bool val)
+            {
+                FLockPlayer.SetValue(gm, val);
+            }
+
+            public static ENT_Player GetLocalPlayer(CL_GameManager gm)
+            {
+                return (ENT_Player)FLocalPlayer.GetValue(gm);
+            }
+
+            public static CL_UIManager GetUiMan(CL_GameManager gm)
+            {
+                return (CL_UIManager)FUiMan.GetValue(gm);
+            }
+
+            public static StatManager GetStatManager(CL_GameManager gm)
+            {
+                return (StatManager)FStatManager.GetValue(gm);
+            }
+
+            public static IList<CL_GameManager.DeathType> GetDeathTypes(CL_GameManager gm)
+            {
+                return (IList<CL_GameManager.DeathType>)FDeathTypes.GetValue(gm);
+            }
+
+            public static void SetPlayerDead(ENT_Player player, bool val)
+            {
+                FPlayerDead.SetValue(player, val);
+            }
+
+            public static string GetReleventTip(CL_GameManager gm)
+            {
+                return (string)MGetReleventTip.Invoke(gm, null);
+            }
+
+            public static IEnumerator EndGameSequence(CL_GameManager gm)
+            {
+                return (IEnumerator)MEndGameSequence.Invoke(gm, null);
+            }
+
+            public static void ResetVignettes(CL_UIManager ui)
+            {
+                MResetVignettes.Invoke(ui, null);
+            }
         }
 
-        [HarmonyPatch]
-        public static class LoadSaveHookPatch
+        [HarmonyPatch(typeof(CL_GameManager), "Die")]
+        public static class PatchClGameManagerDie
         {
-            [HarmonyPatch(typeof(CL_SaveManager), "LoadSave")]
             [HarmonyPrefix]
-            public static void BeforeLoadSave()
+            public static bool Prefix(CL_GameManager __instance, string type = "")
             {
-                isLoadingSave = true;
-                Main.Logger.LogInfo("Save loading started; transition effects are disabled.");
-            }
-
-            [HarmonyPatch(typeof(CL_UIManager), "FadeOut")]
-            [HarmonyPrefix]
-            public static bool SkipFadeOut()
-            {
-                return !isLoadingSave;
-            }
-
-            [HarmonyPatch(typeof(CL_UIManager), "FadeIn")]
-            [HarmonyPrefix]
-            public static bool SkipFadeIn()
-            {
-                return !isLoadingSave;
-            }
-
-            [HarmonyPatch(typeof(CL_SaveManager.SaveState), "LoadDelay")]
-            [HarmonyPrefix]
-            public static bool SkipLoadDelay(ref IEnumerator __result)
-            {
-                __result = EmptyDelayRoutine();
-                return false;
-            }
-
-            [HarmonyPatch(typeof(CL_GameManager), "ResetPlayerDistanceCheckPosition")]
-            [HarmonyPostfix]
-            public static void OnWorldLoadedInstant()
-            {
-                if (!isLoadingSave)
-                    return;
-
-                isLoadingSave = false;
-                Main.Logger.LogInfo("The scene loaded and opened without transition effects.");
-                PlayCustomSound();
-            }
-        }
-
-        [HarmonyPatch]
-        public static class ReviveHookPatch
-        {
-            [HarmonyTargetMethod]
-            public static MethodBase TargetMethod()
-            {
-                foreach (var method in AccessTools.GetDeclaredMethods(typeof(CL_GameManager)))
-                {
-                    if (method.Name.Contains("ReviveSequence"))
-                        return method;
-                }
-
-                foreach (var nestedType in typeof(CL_GameManager).GetNestedTypes(AccessTools.all))
-                {
-                    foreach (var method in AccessTools.GetDeclaredMethods(nestedType))
-                    {
-                        if (method.Name.Contains("ReviveSequence"))
-                            return method;
-                    }
-                }
-
-                Main.Logger.LogError("The ReviveSequence method could not be found.");
-                return null;
-            }
-
-            [HarmonyPrefix]
-            public static bool Prefix(object __instance, ref IEnumerator __result)
-            {
-                CL_GameManager gm = __instance as CL_GameManager;
-                
-                if (gm == null && __instance != null)
-                {
-                    var thisField = Traverse.Create(__instance).Field("<>4__this");
-                    if (thisField.FieldExists())
-                        gm = thisField.GetValue<CL_GameManager>();
-                }
-
-                if (gm == null)
-                    gm = CL_GameManager.gMan;
-
-                CL_SaveManager.SaveState saveObj = null;
-                if (__instance != null)
-                {
-                    var saveTraverse = Traverse.Create(__instance).Field("save");
-                    if (saveTraverse.FieldExists())
-                    {
-                        saveObj = saveTraverse.GetValue<CL_SaveManager.SaveState>();
-                    }
-                    else
-                    {
-                        foreach (var field in AccessTools.GetDeclaredFields(__instance.GetType()))
-                        {
-                            if (field.FieldType == typeof(CL_SaveManager.SaveState))
-                            {
-                                saveObj = field.GetValue(__instance) as CL_SaveManager.SaveState;
-                                if (saveObj != null) break;
-                            }
-                        }
-                    }
-                }
-
-                if (gm != null)
-                {
-                    __result = InstantReviveRoutine(gm, saveObj);
+                if (GameAccess.GmDead)
                     return false;
+
+                GameAccess.GmDead = true;
+                var onPlayerDeath = GameAccess.OnPlayerDeath;
+                if (onPlayerDeath != null)
+                    onPlayerDeath();
+
+                StatManager.sessionStats.UpdateStatistic("deaths", 1, StatManager.Statistic.DataType.Int,
+                    StatManager.Statistic.ModType.Add);
+                var save = CL_SaveManager.GetMostRecentSaveStateByType(CL_SaveManager.SaveState.SaveType.disk);
+
+                if (save != null)
+                {
+                    __instance.StartCoroutine(ReviveSequence());
+                }
+                else
+                {
+                    var deathTypes = GameAccess.GetDeathTypes(__instance);
+                    var statManager = GameAccess.GetStatManager(__instance);
+                    var localPlayer = GameAccess.GetLocalPlayer(__instance);
+
+                    CL_GameManager.curDeathType = deathTypes[0];
+                    var localization = CL_LocalizationManager.GetLocalization("deathmessages", type);
+                    if (localization == "")
+                        localization = CL_LocalizationManager.GetLocalization("deathmessages", "basic");
+
+                    foreach (var deathType in deathTypes)
+                        if (type == deathType.name)
+                            CL_GameManager.curDeathType = deathType;
+
+                    statManager.GetScoreScreen().SetDeathText(localization);
+                    statManager.GetScoreScreen().SetTip(GameAccess.GetReleventTip(__instance));
+                    __instance.StartCoroutine(GameAccess.EndGameSequence(__instance));
+                    localPlayer.KillEffects(type);
                 }
 
-                return true;
-            }
-
-            private static IEnumerator InstantReviveRoutine(CL_GameManager gm, CL_SaveManager.SaveState save)
-            {
-                if ((UnityEngine.Object) DEN_DeathFloor.instance != (UnityEngine.Object) null)
-                    DEN_DeathFloor.instance.StopAllCoroutines();
-
-                CL_EventManager.StopAllEvents();
-
-                Traverse.Create(gm).Field("reviving").SetValue(true);
-                CL_GameManager.SetTimescale(1f);
-
-                if ((UnityEngine.Object) WorldLoader.instance != (UnityEngine.Object) null)
-                    WorldLoader.instance.ClearCurrentGenerator();
-
-                if (gm.localPlayer != null)
+                IEnumerator ReviveSequence()
                 {
-                    gm.localPlayer.SetGravityMult(1f);
-                    gm.localPlayer.SetGravity(true);
-                    gm.localPlayer.Lock();
-                }
+                    var localPlayer = GameAccess.GetLocalPlayer(__instance);
+                    var uiMan = GameAccess.GetUiMan(__instance);
 
-                if (gm.uiMan != null && gm.uiMan.reviveGroup != null)
-                {
-                    gm.uiMan.reviveGroup.alpha = 0f;
-                    gm.uiMan.reviveGroup.gameObject.SetActive(false);
-                }
+                    if (DEN_DeathFloor.instance != null)
+                        DEN_DeathFloor.instance.StopAllCoroutines();
 
-                if (save != null && gm.localPlayer != null)
-                {
-                    save.UpdatePlayerData(gm.localPlayer);
+                    CL_EventManager.StopAllEvents();
+                    GameAccess.SetReviving(__instance, true);
+                    // localPlayer.clipHandler.GetGroup((ReadOnlySpan<char>)"player").GetSet((ReadOnlySpan<char>)"death")
+                    //     .Play(1f);
+                    //CL_GameManager.SetTimescale(0.1f);
+                    CL_UIManager.instance.SetVignetteTarget("bloodied", 0.0f);
+                    uiMan.reviveGroup.gameObject.SetActive(false);
+                    AudioManager.FadeOutMusic();
+
+                    if (WorldLoader.instance != null)
+                        WorldLoader.instance.ClearCurrentGenerator();
+
+                    localPlayer.SetGravityMult(1f);
+                    localPlayer.SetGravity(true);
+                    //yield return new WaitForSecondsRealtime(1f);
+
+                    // var fadeSpeed = 0.2f;
+                    // var reviveAudio = CL_UIManager.instance.reviveGroup.GetComponent<AudioSource>();
+                    localPlayer.Lock();
+
+                    // while (uiMan.reviveGroup.alpha < 1.0)
+                    // {
+                    //     reviveAudio.volume += (float)(Time.unscaledDeltaTime * (double)fadeSpeed * 0.5);
+                    //     uiMan.reviveGroup.alpha += Time.unscaledDeltaTime * fadeSpeed;
+                    //     yield return null;
+                    // }
+
+                    __instance.GetComponent<AudioSource>().Play();
+                    save.UpdatePlayerData(localPlayer);
                     CL_SaveManager.LoadSave(save);
+                    //yield return new WaitForSecondsRealtime(2f);
+
+                    localPlayer.SetGravityMult(1f);
+                    localPlayer.SetGravity(true);
+                    GameAccess.GmDead = false;
+                    CL_GameManager.SetTimescale(1f);
+                    localPlayer.UnLock();
+                    localPlayer.AddGripStrength(20f);
+                    //yield return new WaitForSecondsRealtime(0.5f);
+
+                    if (WorldLoader.initialized)
+                        while (!WorldLoader.isLoaded)
+                            yield return null;
+
+                    //yield return new WaitForSecondsRealtime(0.5f);
+                    GameAccess.SetReviving(__instance, false);
+
+                    // while (uiMan.reviveGroup.alpha > 0.0)
+                    // {
+                    //     uiMan.reviveGroup.alpha -= Time.unscaledDeltaTime;
+                    //     //reviveAudio.volume -= Time.unscaledDeltaTime * 1f;
+                    //     yield return null;
+                    // }
+
+                    uiMan.reviveGroup.alpha = 0.0f;
+                    //reviveAudio.volume = 0.0f;
+                    GameAccess.SetReviving(__instance, false);
+                    GameAccess.SetLockPlayer(__instance, false);
+                    localPlayer.SetGravityMult(1f);
+                    localPlayer.SetGravity(true);
+                    CL_UIManager.instance.SetVignetteTarget("bloodied", 0.0f);
+                    //uiMan.reviveGroup.gameObject.SetActive(false);
+                    GameAccess.ResetVignettes(uiMan);
+                    CL_AchievementManager.SetAchievementValue("ACH_REVIVE", true);
+                    StatManager.sessionStats.UpdateStatistic("revives", 1, StatManager.Statistic.DataType.Int,
+                        StatManager.Statistic.ModType.Add);
+                    //yield return new WaitForSecondsRealtime(1f);
+
+                    localPlayer.SetGravity(true);
+                    if (localPlayer.GetTagger() != null)
+                        localPlayer.GetTagger().RemoveTag("Dead");
+
+                    GameAccess.SetPlayerDead(localPlayer, false);
+                    PlayCustomSound();
+                    CL_UIManager.instance.SetVignetteTarget("bloodied", 0.0f);
+                    uiMan.reviveGroup.alpha = 0.0f;
+                    uiMan.reviveGroup.gameObject.SetActive(false);
                 }
 
-                if (WorldLoader.initialized)
-                {
-                    while (!WorldLoader.isLoaded)
-                        yield return null;
-                }
-
-                if (gm.localPlayer != null)
-                {
-                    gm.localPlayer.SetGravityMult(1f);
-                    gm.localPlayer.SetGravity(true);
-                    gm.localPlayer.UnLock();
-                    gm.localPlayer.AddGripStrength(20f);
-                    Traverse.Create(gm.localPlayer).Field("dead").SetValue(false);
-
-                    if ((UnityEngine.Object) gm.localPlayer.GetTagger() != (UnityEngine.Object) null)
-                        gm.localPlayer.GetTagger().RemoveTag("Dead");
-                }
-
-                Traverse.Create(typeof(CL_GameManager)).Field("dead").SetValue(false);
-                CL_GameManager.SetTimescale(1f);
-
-                Traverse.Create(gm).Field("reviving").SetValue(false);
-                Traverse.Create(gm).Field("lockPlayer").SetValue(false);
-
-                if (gm.uiMan != null)
-                {
-                    Traverse.Create(gm.uiMan).Method("ResetVignettes").GetValue();
-                    if (gm.uiMan.reviveGroup != null)
-                    {
-                        gm.uiMan.reviveGroup.alpha = 0f;
-                        gm.uiMan.reviveGroup.gameObject.SetActive(false);
-                    }
-                }
-
-                CL_AchievementManager.SetAchievementValue("ACH_REVIVE", true);
-                StatManager.sessionStats.UpdateStatistic("revives", (object) 1, StatManager.Statistic.DataType.Int, StatManager.Statistic.ModType.Add);
-
-                Main.Logger.LogInfo("Revive completed.");
-
-                PlayCustomSound();
+                return false;
             }
         }
     }
